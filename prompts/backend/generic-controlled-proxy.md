@@ -29,20 +29,17 @@ The backend already has appsettings sections named:
 ```json
 {
   "Chatbot": {
-    "BaseUrl": "https://chatbot-service.example.com",
-    "Scope": "api://chatbot-api/.default"
+    "BaseUrl": "https://chatbot-service.example.com"
   },
   "AiWorkflow": {
-    "BaseUrl": "https://workflow-service.example.com",
-    "Scope": "api://workflow-api/.default"
-  },
-  "ProductScope": {
-    "DealId": "single-deal"
+    "BaseUrl": "https://workflow-service.example.com"
   }
 }
 ```
 
 Use these existing section names. Do not introduce a new `DownstreamApis` section.
+
+Do not assume `Scope` already exists in appsettings. If app-identity token acquisition needs a scope/resource value, add a small, clearly named optional setting under the existing section, or leave a TODO for the project-specific Entra audience/scope.
 
 ## What to build
 
@@ -74,10 +71,11 @@ The backend should forward requests to the configured downstream service:
    - `userId`
    - `payload`
 6. Keep this wrapping contract the same for both Chatbot and AI Workflow.
-7. Strip any frontend-supplied trusted headers or identity fields.
-8. Add basic logging/audit using correlation ID.
-9. Return downstream status code and response body to the frontend.
-10. Keep the implementation simple and Copilot-friendly.
+7. `dealId` is optional. Include it when available; allow it to be null when it cannot be resolved.
+8. Strip any frontend-supplied trusted headers or identity fields.
+9. Add basic logging/audit using correlation ID.
+10. Return downstream status code and response body to the frontend.
+11. Keep the implementation simple and Copilot-friendly.
 
 ## Payload wrapping contract
 
@@ -94,7 +92,7 @@ The backend should forward this to the downstream service:
 ```json
 {
   "correlationId": "generated-or-existing-correlation-id",
-  "dealId": "configured-single-deal-id",
+  "dealId": "sql-generated-deal-id-when-available-or-null",
   "userId": "entra-user-object-id",
   "payload": {
     "message": "What are the open risks?"
@@ -107,11 +105,22 @@ For requests without a JSON body, use:
 ```json
 {
   "correlationId": "generated-or-existing-correlation-id",
-  "dealId": "configured-single-deal-id",
+  "dealId": null,
   "userId": "entra-user-object-id",
   "payload": null
 }
 ```
+
+## Deal ID handling
+
+`dealId` is generated and stored by SQL, not fixed in appsettings.
+
+Implement deal ID resolution as optional:
+
+- If the request includes a deal ID in a route value, query string, or request body, use that after basic validation.
+- If the backend has a current single-deal lookup/service already available, use it to resolve the current deal ID.
+- If no deal ID can be resolved, set `dealId` to `null` in the downstream envelope.
+- Do not add a required `ProductScope:DealId` setting.
 
 ## Suggested implementation
 
@@ -124,7 +133,6 @@ Proxy/IDownstreamProxyClient.cs
 Auth/DownstreamTokenProvider.cs
 Auth/IDownstreamTokenProvider.cs
 Auth/DownstreamAuthHandler.cs
-Options/ProductScopeOptions.cs
 Options/ChatbotOptions.cs
 Options/AiWorkflowOptions.cs
 Models/DownstreamProxyEnvelope.cs
@@ -141,10 +149,14 @@ Use the existing appsettings sections:
 
 ```text
 Chatbot:BaseUrl
-Chatbot:Scope
 AiWorkflow:BaseUrl
-AiWorkflow:Scope
-ProductScope:DealId
+```
+
+If token acquisition needs a scope/audience, keep it optional and project-specific, for example:
+
+```text
+Chatbot:Scope       // optional, add only if needed
+AiWorkflow:Scope    // optional, add only if needed
 ```
 
 Use a delegating handler to attach the backend app-identity token for the correct downstream API.
@@ -161,7 +173,7 @@ The proxy controller should:
 4. Reject any other service name.
 5. Get or create a correlation ID.
 6. Get `userId` from the validated Entra claim, preferably `oid`.
-7. Get `dealId` from `ProductScope:DealId`.
+7. Try to resolve `dealId`; allow null if unavailable.
 8. Read the frontend request body as JSON when present.
 9. Create `DownstreamProxyEnvelope`.
 10. Forward to the downstream path with the original query string.
@@ -172,7 +184,7 @@ The proxy controller should:
 ```csharp
 public sealed record DownstreamProxyEnvelope(
     string CorrelationId,
-    string DealId,
+    string? DealId,
     string UserId,
     object? Payload);
 ```
@@ -194,5 +206,7 @@ The implementation is done when:
 3. `/api/workflow/*` forwards to the service configured under the existing `AiWorkflow` section.
 4. Downstream calls use app identity / client credentials.
 5. Forwarded request body is wrapped as `{ correlationId, dealId, userId, payload }`.
-6. Frontend bearer token is never forwarded downstream.
-7. The implementation does not require one backend method per downstream API method.
+6. `dealId` is optional and may be null.
+7. `Scope` is not assumed to already exist in appsettings.
+8. Frontend bearer token is never forwarded downstream.
+9. The implementation does not require one backend method per downstream API method.
