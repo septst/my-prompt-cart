@@ -22,6 +22,28 @@ Implement a **generic proxy** in the ASP.NET Core backend so the React frontend 
 - Product is currently **single tenant / single deal**.
 - Do not implement complex multi-tenant RBAC yet.
 
+## Existing configuration
+
+The backend already has appsettings sections named:
+
+```json
+{
+  "Chatbot": {
+    "BaseUrl": "https://chatbot-service.example.com",
+    "Scope": "api://chatbot-api/.default"
+  },
+  "AiWorkflow": {
+    "BaseUrl": "https://workflow-service.example.com",
+    "Scope": "api://workflow-api/.default"
+  },
+  "ProductScope": {
+    "DealId": "single-deal"
+  }
+}
+```
+
+Use these existing section names. Do not introduce a new `DownstreamApis` section.
+
 ## What to build
 
 Create generic backend proxy routes for:
@@ -36,8 +58,8 @@ These route names are examples/prefixes. Keep the implementation flexible so exa
 The backend should forward requests to the configured downstream service:
 
 ```text
-/api/chatbot/*  -> Chatbot Service
-/api/workflow/* -> AI Workflow Service
+/api/chatbot/*  -> Chatbot section / Chatbot Service
+/api/workflow/* -> AiWorkflow section / AI Workflow Service
 ```
 
 ## Required behaviour
@@ -91,28 +113,6 @@ For requests without a JSON body, use:
 }
 ```
 
-## Configuration
-
-Use app settings like:
-
-```json
-{
-  "ProductScope": {
-    "DealId": "single-deal"
-  },
-  "DownstreamApis": {
-    "Chatbot": {
-      "BaseUrl": "https://chatbot-service.example.com",
-      "Scope": "api://chatbot-api/.default"
-    },
-    "Workflow": {
-      "BaseUrl": "https://workflow-service.example.com",
-      "Scope": "api://workflow-api/.default"
-    }
-  }
-}
-```
-
 ## Suggested implementation
 
 Create:
@@ -125,7 +125,8 @@ Auth/DownstreamTokenProvider.cs
 Auth/IDownstreamTokenProvider.cs
 Auth/DownstreamAuthHandler.cs
 Options/ProductScopeOptions.cs
-Options/DownstreamApiOptions.cs
+Options/ChatbotOptions.cs
+Options/AiWorkflowOptions.cs
 Models/DownstreamProxyEnvelope.cs
 ```
 
@@ -133,7 +134,17 @@ Use named `HttpClient`s:
 
 ```text
 Chatbot
-Workflow
+AiWorkflow
+```
+
+Use the existing appsettings sections:
+
+```text
+Chatbot:BaseUrl
+Chatbot:Scope
+AiWorkflow:BaseUrl
+AiWorkflow:Scope
+ProductScope:DealId
 ```
 
 Use a delegating handler to attach the backend app-identity token for the correct downstream API.
@@ -145,12 +156,12 @@ Use `DefaultAzureCredential` for token acquisition so managed identity works in 
 The proxy controller should:
 
 1. Accept `/api/chatbot/{**path}` and `/api/workflow/{**path}`.
-2. Map `chatbot` to the Chatbot named `HttpClient`.
-3. Map `workflow` to the Workflow named `HttpClient`.
+2. Map `chatbot` to the `Chatbot` named `HttpClient` and `Chatbot` appsettings section.
+3. Map `workflow` to the `AiWorkflow` named `HttpClient` and `AiWorkflow` appsettings section.
 4. Reject any other service name.
 5. Get or create a correlation ID.
 6. Get `userId` from the validated Entra claim, preferably `oid`.
-7. Get `dealId` from configuration.
+7. Get `dealId` from `ProductScope:DealId`.
 8. Read the frontend request body as JSON when present.
 9. Create `DownstreamProxyEnvelope`.
 10. Forward to the downstream path with the original query string.
@@ -179,8 +190,8 @@ public sealed record DownstreamProxyEnvelope(
 The implementation is done when:
 
 1. Authenticated frontend users can call backend proxy routes.
-2. `/api/chatbot/*` forwards to Chatbot Service.
-3. `/api/workflow/*` forwards to AI Workflow Service.
+2. `/api/chatbot/*` forwards to the service configured under the existing `Chatbot` section.
+3. `/api/workflow/*` forwards to the service configured under the existing `AiWorkflow` section.
 4. Downstream calls use app identity / client credentials.
 5. Forwarded request body is wrapped as `{ correlationId, dealId, userId, payload }`.
 6. Frontend bearer token is never forwarded downstream.
